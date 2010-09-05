@@ -23,7 +23,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-//! ComPPactor is a proof of concept C++ garbage collector, showing that all of the
+//! chompact is a proof of concept C++ garbage collector, showing that all of the
 //! information necessary to traverse the object graph can be dynamically determined
 //! at runtime using C++ template metaprogramming.
 
