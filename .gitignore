@@ -1,0 +1,6 @@
+html
+latex
+chompact
+.*.sw*
+*.log
+*.aux
