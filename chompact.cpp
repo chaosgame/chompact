@@ -29,20 +29,23 @@
 
 // TODO output object graph to DOT
 
-#include <cstdlib>
-#include <iostream>
-#include <vector>
-#include <stack>
-#include <cstdint>
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
-#include <cassert>
+#include <iostream>
+#include <stack>
+#include <vector>
+#include <sys/mman.h>
+
+#ifndef NDEBUG
+#include <typeinfo>
+#endif
 
 // TODO: assert at runtime that this is actually the page size.
 const size_t PageSize = 4096;
 
 // Divide and round up
-#define DIVU(N, D) (N + D - 1) / D
+#define DIVU(N, D) (N + D - 1) / (D)
 
 class Heap;
 class CollectedBase;
@@ -60,15 +63,37 @@ public:
 
 	//! This is the number of objects that we can keep in a single page, including the bits to mark the
 	//! free spaces.
-	static const size_t Size = (PageSize / ObjectSize * 8 / 9);
+	static const size_t Size = ((PageSize - sizeof(Heap*)) * 8) / (ObjectSize * 8 + 1);
 
 private:
-	char* m_data[Size * ObjectSize];
+	char m_data[Size * ObjectSize];
 
 	//! We keep track of the marked bits
-	uintptr_t m_marked[DIVU(Size, sizeof(uintptr_t))];
+	uintptr_t m_marked[DIVU(Size, 8 * sizeof(uintptr_t))];
+
+	Heap* m_heap;
 
 public:
+	DataPage(Heap* heap) : m_heap(heap) { }
+
+	void* operator new(size_t s)
+	{
+		assert(s <= PageSize);
+
+		return malloc(PageSize);
+	}
+
+	static DataPage* dataPage(CollectedBase* _p)
+	{
+		uintptr_t p = reinterpret_cast<uintptr_t>(_p);
+		return reinterpret_cast<DataPage*>(p & ~(PageSize - 1));
+	}
+
+	Heap* heap() const
+	{
+		return m_heap;
+	}
+
 	void* pointer(size_t i)
 	{
 		return static_cast<void*>(&m_data[i * ObjectSize]);
@@ -79,7 +104,7 @@ public:
 		m_marked[i / (sizeof(uintptr_t) * 8)] |= 1 << (i % (sizeof(uintptr_t) * 8));
 	}
 
-	bool marked(size_t i)
+	bool marked(size_t i) const
 	{
 		return m_marked[i / (sizeof(uintptr_t) * 8)] & 1 << (i % (sizeof(uintptr_t) * 8));
 	}
@@ -93,22 +118,35 @@ public:
 
 //! To accomodate more advanced garbage collectors that will move objects, handles
 //! are references to indirect pointers, rather than directly to the objects themselves.
-struct IndirectPointer
+class IndirectPointerBase
 {
+public:
 	static const size_t Size = sizeof(uintptr_t) * 8;
-	unsigned data : Size - 1;
-	unsigned flag : 1;
+	unsigned m_data : Size - 1;
+
+	unsigned m_invalid : 1;
+
+	void* operator new(size_t s, Heap* heap);
 };
 
 
 //! The IndirectPointerPage is an array of IndirectPointer's that manages the removed
 //! items in a free list.
-struct IndirectPointerPage
+class IndirectPointerPage
 {
-	static const size_t Size = PageSize / sizeof(IndirectPointer) - 2 * sizeof(size_t);
+public:
+	static const size_t Size = PageSize / sizeof(IndirectPointerBase) - 2 * sizeof(size_t);
 
 	size_t m_begin, m_freeList;
-	IndirectPointer m_handles[Size];
+	IndirectPointerBase m_handles[Size];
+
+	void* operator new(size_t s)
+	{
+		assert(s <= PageSize);
+
+		// return malloc(PageSize);
+		return mmap(0, PageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	}
 
 	IndirectPointerPage()
 		: m_begin(1)
@@ -116,14 +154,14 @@ struct IndirectPointerPage
 	{
 	}
 
-	IndirectPointer* allocateIndirectPointer()
+	void* allocateIndirectPointer()
 	{
 		if (m_freeList)
 		{
 			uintptr_t allocated = m_freeList;
-			assert(!m_handles[allocated].flag);
+			assert(!m_handles[allocated].m_invalid);
 
-			m_freeList = m_handles[allocated].data;
+			m_freeList = m_handles[allocated].m_data;
 
 			return &m_handles[allocated];
 		}
@@ -138,6 +176,19 @@ struct IndirectPointerPage
 	}
 };
 
+template<typename Class>
+class IndirectPointer : public IndirectPointerBase
+{
+public:
+	IndirectPointer(Class* ptr)
+	{
+		m_data = reinterpret_cast<uintptr_t>(ptr);
+	}
+
+	Class* operator->() const { return m_invalid ? 0 : m_data; }
+	Class& operator*() const { return m_invalid ? 0 : m_data; }
+};
+
 class Heap
 {
 public:
@@ -146,11 +197,13 @@ public:
 	bool marked(CollectedBase*);
 	void mark(CollectedBase*);
 
+	static Heap* heap(CollectedBase*);
+
 	void collect();
-	void* allocateObject(size_t size);
 	void markChildren(CollectedBase* p);
 
-	IndirectPointer* allocateIndirectPointer();
+	void* allocateObject(size_t size);
+	void* allocateIndirectPointer();
 
 private:
 	std::stack<CollectedBase*> m_marking;
@@ -159,7 +212,7 @@ private:
 	size_t m_nextFreeDataPage;
 	size_t m_nextFreeObject;
 
-	std::vector<IndirectPointerPage*> m_handlePages;
+	std::vector<IndirectPointerPage*> m_indirectPointerPages;
 	size_t m_nextFreeIndirectPointerPage;
 };
 
@@ -259,34 +312,41 @@ template<typename Class>
 class Handle
 {
 public:
-	Handle() : m_ptr(0) {}
-	Handle(Collected<Class>* ptr) : m_ptr(ptr) {}
+	Handle() : m_iptr(0) {}
+	Handle(Collected<Class>* ptr);
 
-	Class& operator*() const { return m_ptr->instance; }
-	Class* operator->() const { return &m_ptr->instance; }
-	operator bool() const { return m_ptr; }
+	Class& operator*() const { return m_iptr ? *reinterpret_cast<Class*>(m_iptr->m_data) : NULL; }
+	Class* operator->() const { return m_iptr ? reinterpret_cast<Class*>(m_iptr->m_data) : NULL; }
+	operator bool() const { return m_iptr; }
 
 	Handle& operator=(Collected<Class>* collected)
 	{
-		MemberBase<Class>::m_ptr = collected;
+		if (m_iptr)
+			m_iptr->m_data = collected;
+		else
+			m_iptr = new (Heap::heap(collected)) IndirectPointer<Class>(&collected->instance);
 		return *this;
 	}
 
 	template<typename T>
 	Handle& operator=(const Member<T, Class>& handle)
 	{
-		m_ptr = reinterpret_cast<Collected<Class>*>(handle.MemberBase<T>::m_ptr);
+		Collected<Class>* ptr = static_cast<Collected<Class>*>(handle.MemberBase<T>::m_ptr);
+		if (m_iptr)
+			m_iptr->m_data = reinterpret_cast<uintptr_t>(ptr);
+		else
+			m_iptr = new (Heap::heap(ptr)) IndirectPointer<Class>(&ptr->instance);
 		return *this;
 	}
 
 	Handle& operator=(const Handle<Class>& handle)
 	{
-		m_ptr = handle.m_ptr;
+		m_iptr = handle.m_iptr;
 		return *this;
 	}
 
 private:
-	Collected<Class>* m_ptr;
+	IndirectPointer<Class>* m_iptr;
 };
 
 template<typename Class>
@@ -297,16 +357,22 @@ ObjectInfo<Class>::ObjectInfo()
 	Class c;
 	for(size_t i = 0; i < m_numChildren; ++i)
 		m_children[i] -= reinterpret_cast<uintptr_t>(&c);
+#ifndef NDEBUG
+	std::cout << "resolving: " << typeid(*this).name() << std::endl;
 	for(size_t i = 0; i < m_numChildren; ++i)
 		std::cout << "child: " << m_children[i] << std::endl;
+	std::cout << std::string('*',20) << std::endl;
+#endif
 	m_finalized = true;
 }
 
 
-Handle::Handle(Collected<Class>* ptr)
+template<typename Class>
+Handle<Class>::Handle(Collected<Class>* ptr)
+	: m_iptr(new (Heap::heap(ptr)) IndirectPointer<Class>(&ptr->instance))
 {
-	Heap* heap = Heap::heap(ptr);
-	m_ptr = heap->allocateHandle();
+	std::cout << m_iptr << std::endl;
+	std::cout << new (Heap::heap(ptr)) IndirectPointer<Class>(&ptr->instance) << std::endl;
 }
 
 template<typename Class>
@@ -343,31 +409,33 @@ void* Collected<Class>::operator new(size_t size, Heap& heap)
 	return heap.allocateObject(size);
 }
 
-struct List
-{
-	int data;
-	Member<List, List> next;
-};
-
 Heap::Heap()
 	: m_nextFreeDataPage(0)
 	, m_nextFreeObject(0)
 	, m_nextFreeIndirectPointerPage(0)
 {
-	m_dataPages.push_back(new DataPage);
+	m_dataPages.push_back(new DataPage(this));
 	m_dataPages.back()->clear();
+
+	m_indirectPointerPages.push_back(new IndirectPointerPage);
 }
 
 bool Heap::marked(CollectedBase* _p)
 {
 	uintptr_t p = reinterpret_cast<uintptr_t>(_p);
-	return m_dataPages[p / DataPage::Size]->marked(p % DataPage::Size);
+	return DataPage::dataPage(_p)->marked(p % DataPage::Size);
 }
 
 void Heap::mark(CollectedBase* _p)
 {
 	uintptr_t p = reinterpret_cast<uintptr_t>(_p);
-	m_dataPages[p / DataPage::Size]->mark(p % DataPage::Size);
+	DataPage::dataPage(_p)->mark(p % DataPage::Size);
+}
+
+Heap* Heap::heap(CollectedBase* _p)
+{
+	uintptr_t p = reinterpret_cast<uintptr_t>(_p);
+	return DataPage::dataPage(_p)->heap();
 }
 
 void Heap::collect()
@@ -375,11 +443,11 @@ void Heap::collect()
 	assert(m_marking.empty());
 
 	// mark roots
-	for (size_t i = 0; i < m_handlePages.size(); ++i)
+	for (size_t i = 0; i < m_indirectPointerPages.size(); ++i)
 	{
 		for (size_t j = 0; j < IndirectPointerPage::Size; ++j)
 		{
-			CollectedBase* p = reinterpret_cast<CollectedBase*>(m_handlePages[i]->m_handles[i].data & ((1U << 31U) - 1U));
+			CollectedBase* p = reinterpret_cast<CollectedBase*>(m_indirectPointerPages[i]->m_handles[i].m_data & ((1U << 31U) - 1U));
 			mark(p);
 			markChildren(p);
 		}
@@ -437,19 +505,48 @@ void* Heap::allocateObject(size_t size)
 		++m_nextFreeDataPage;
 	} while (m_nextFreeDataPage != m_dataPages.size());
 
-	// XXX add new things to m_dataPage
+	// XXX increase the number of data pages
 
 	collect();
 
 	return malloc(size);
 }
 
+void* Heap::allocateIndirectPointer()
+{
+	void* iptr;
+	IndirectPointerPage* page;
+	do
+	{
+		page = m_indirectPointerPages[m_nextFreeIndirectPointerPage]; 
+		iptr = page->allocateIndirectPointer();
+
+		if (iptr)
+			return iptr;
+
+		++m_nextFreeIndirectPointerPage;
+	} while(m_nextFreeIndirectPointerPage != m_indirectPointerPages.size());
+}
+
+void* IndirectPointerBase::operator new(size_t s, Heap* heap)
+{
+	assert(s == sizeof(uintptr_t));
+	heap->allocateIndirectPointer();
+}
+
+
+struct List
+{
+	int data;
+	//! The first member is the type of the struct
+	//! The second member is the type of the pointer
+	Member<List, List> next;
+};
+
 int main()
 {
 	Heap heap;
-	Collected<List>* p = new(heap) Collected<List>;
-	Handle<List> head = p;
-	std::cout << 0 << "\t" << p << "\t" << &*head << std::endl;
+	Handle<List> head = new(heap) Collected<List>;
 	head->data = 0;
 
 	Handle<List> list = head;
@@ -459,17 +556,13 @@ int main()
 		list->next = p;
 		list = list->next;
 		list->data = i;
-
-		std::cout << i << "\t" << p << "\t" << &*list << std::endl;
 	}
-
-	std::cout << std::endl;
 
 	heap.collect();
 
 	for (list = head; list; list = list->next)
 	{
-		std::cout << list.operator->() << "\t" << list->data << std::endl;
+		std::cout << list->data << std::endl;
 	}
 }
 
