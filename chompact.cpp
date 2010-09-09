@@ -41,7 +41,6 @@
 #include <typeinfo>
 #endif
 
-// TODO: assert at runtime that this is actually the page size.
 const size_t PageSize = 4096;
 
 // Divide and round up
@@ -50,12 +49,12 @@ const size_t PageSize = 4096;
 class Heap;
 class CollectedBase;
 template<typename Class> class Collected;
+template<typename Class> class Handle;
 
 //! All heap objects are allocated on a DataPage.  DataPages are convenient, because since they are aligned
 //! the static information on the data page can be accessed by any pointer allocated within the DataPage
 //! without any additional space overhead.
 //
-// TODO: allign data pages
 class DataPage
 {
 public:
@@ -280,9 +279,10 @@ public:
 	}
 };
 
-template<typename Class>
-class Handle;
-
+//! Member is a wrapper around a pointer member of a c++ class.  The first template parameter
+//! is the type of the class that the member belongs to, while the second template parameter
+//! the type of the pointer member.  For example, in a class Dictionary, a pointer member to
+//! a type String would be Member<Dictionary, String>
 template<typename Class, typename Property>
 class Member : public MemberBase<Class>
 {
@@ -364,7 +364,13 @@ ObjectInfo<Class>::ObjectInfo()
 	: m_numChildren(0)
 	, m_initializing(true)
 {
+	// Create an object of type Class.  This instance is going to populate
+	// ObjectInfo<Class> with pointers to all of the reference members of Class.
 	Class c;
+
+	// Once we have a list of all of the reference members in Class, we normalize
+	// them to be integer offsets from the beginning of a Class object rather than
+	// direct pointers to a single instance.
 	for(size_t i = 0; i < m_numChildren; ++i)
 		m_children[i] -= reinterpret_cast<uintptr_t>(&c);
 #ifndef NDEBUG
@@ -373,6 +379,9 @@ ObjectInfo<Class>::ObjectInfo()
 		std::cout << "child: " << m_children[i] << std::endl;
 	std::cout << std::string('*',20) << std::endl;
 #endif
+
+	// Finalize the object so that Member<Class,*> doesn't call ObjectInfo::append
+	// from the constructor anymore
 	m_finalized = true;
 }
 
@@ -381,7 +390,8 @@ template<typename Class>
 Handle<Class>::Handle(Collected<Class>* ptr)
 	: m_iptr(new (Heap::heap(ptr)) IndirectPointer<Class>(&ptr->instance))
 {
-	// XXX why does this break without this line
+	// FIXME: for some reason, not having this line here causes us to not print
+	// out 
 	new (Heap::heap(ptr)) IndirectPointer<Class>(&ptr->instance);
 }
 

@@ -1,0 +1,29 @@
+chompact is a compacting garbage collector (currently mark + allocate) that
+utilizes C++ magic to programmaticaly build the object graph.
+
+I created this project to be a proof of concept to see if C++ could easily
+support any runtime reflection.  The result is yes, however there are currently
+numerous inefficiencies in the code.  For example, because Collected inherits
+from CollectedBase with a virtual method, each Collected item takes up an
+additional four bytes for the pointer to the vtable.  This is especially
+troublesome because if a collected object also has a vtable, each instance of
+that object needs to have two vtable pointers, one for the object, and one for
+the Collected wrapper.
+
+Additionally, in the code's current state, inheritance will not work on heap
+allocated objects.  Given a class A with a member pointer a pointing to a type
+P, and a class B that inherits from A, a will have been declared Member<A,P>.
+This means that in creating the member table for B, a will not be added to B's
+ObjectInfo, but instead A's ObjectInfo.
+
+Finally, there are a number of implementation bugs in the code.  Due to the
+difference in size between a Class instance and a Collected<Class> instance (the
+extra vtable pointer) and supurfluous reinterpret_casts, I think I'm
+accidentally writing to the wrong location in a couple of cases.
+
+There is no doubt in my mind that there are other issues with this code, but
+these are the two glaring ones right now.
+
+Another, potentially more useful, application of this technology would be to
+print out the object graph as a dot file at runtime as a debugging aid.
+
