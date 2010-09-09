@@ -3,7 +3,7 @@ utilizes C++ magic to programmaticaly build the object graph.
 
 I created this project to be a proof of concept to see if C++ could easily
 support any runtime reflection.  The result is yes, however there are currently
-numerous inefficiencies in the code.  For example, because Collected inherits
+numerous problems with the code.  For example, because Collected inherits
 from CollectedBase with a virtual method, each Collected item takes up an
 additional four bytes for the pointer to the vtable.  This is especially
 troublesome because if a collected object also has a vtable, each instance of
@@ -22,7 +22,7 @@ extra vtable pointer) and supurfluous reinterpret_casts, I think I'm
 accidentally writing to the wrong location in a couple of cases.
 
 There is no doubt in my mind that there are other issues with this code, but
-these are the two glaring ones right now.
+these are the glaring ones right now.
 
 Another, potentially more useful, application of this technology would be to
 print out the object graph as a dot file at runtime as a debugging aid.
