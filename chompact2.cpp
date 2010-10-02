@@ -37,7 +37,7 @@
 		enum IdType { C##IdSentinal }; \
 		typedef C##Impl< IdType > DynImpl; \
 	}; \
-	template<typename IdType> class C##Impl : DynamicBase
+	template<typename IdType> class C##Impl : public DynamicBase
 #define DynamicMember(C) Member< IdType, C >
 #define extends ,
 #define Dyn(C) DynamicWrapper< C >
@@ -121,6 +121,21 @@ public:
 
 	Property& operator*() const { return *reinterpret_cast<Property*>(MemberBase<ClassId>::m_ptr); }
 	Property* operator->() const { return reinterpret_cast<Property*>(MemberBase<ClassId>::m_ptr); }
+
+	operator bool() const { return MemberBase<ClassId>::m_ptr; }
+
+	/*Member& operator=(DynamicWrapper<Property>* collected)
+	{
+		MemberBase<ClassId>::m_ptr = collected;
+		return *this;
+	}*/
+
+	template<typename T>
+	Member& operator=(const Member<T, Property>& handle)
+	{
+		MemberBase<ClassId>::m_ptr = handle.MemberBase<T>::m_ptr;
+		return *this;
+	}
 };
 
 //! TODO
@@ -132,7 +147,7 @@ public:
 
 //! TODO
 template<typename Class>
-class DynamicWrapper : Class::DynImpl
+class DynamicWrapper : public Class::DynImpl
 {
 public:
 	DynamicWrapper()
@@ -148,16 +163,16 @@ public:
 	}
 };
 
-DynamicClass(Graph)
+DynamicClass(List)
 {
+public:
 	int data;
-	DynamicMember(Graph) next;
+	DynamicMember(List) next;
 };
 
 
 int main()
 {
-	Dyn(Graph) dynamic_graph;
-	// std::cout << dynamic_graph.object_graph() << std::endl;
+	Dyn(List)* head = new Dyn(List);
 }
 
