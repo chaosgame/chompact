@@ -59,6 +59,8 @@ public:
 
 	void populate(uintptr_t base)
 	{
+		if (finalized)
+			return;
 		// Create an object of type Class.  This instance is going to populate
 		// ObjectInfo<Class> with pointers to all of the reference members of Class.
 		// Once we have a list of all of the reference members in Class, we normalize
@@ -104,7 +106,6 @@ public:
 		DynamicObjectInfo<ClassId>::info.children.push_back(reinterpret_cast<uintptr_t>(this));
 	}
 
-private:
 	void* m_ptr;
 };
 
@@ -123,12 +124,13 @@ public:
 	Property* operator->() const { return reinterpret_cast<Property*>(MemberBase<ClassId>::m_ptr); }
 
 	operator bool() const { return MemberBase<ClassId>::m_ptr; }
+	operator Dyn(Property)*() { return reinterpret_cast<Dyn(Property)*>(MemberBase<ClassId>::m_ptr); }
 
-	/*Member& operator=(DynamicWrapper<Property>* collected)
+	Member& operator=(DynamicWrapper<Property>* collected)
 	{
 		MemberBase<ClassId>::m_ptr = collected;
 		return *this;
-	}*/
+	}
 
 	template<typename T>
 	Member& operator=(const Member<T, Property>& handle)
@@ -174,5 +176,21 @@ public:
 int main()
 {
 	Dyn(List)* head = new Dyn(List);
+	head->data = 0;
+
+	Dyn(List)* list = head;
+	for (int i = 1; i < 10; ++i)
+	{
+		Dyn(List)* p = new Dyn(List);
+		list->next = p;
+		list = p;
+		list->data = i;
+	}
+
+	for (list = head; list; list = list->next)
+	{
+		std::cout << list->data << std::endl;
+	}
+	// std::cout << dynamic_graph.object_graph() << std::endl;
 }
 
